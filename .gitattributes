@@ -1,0 +1,9 @@
+# 强制所有文本文件使用 LF 换行。
+#
+# 原因：Windows 上 core.autocrlf=true 会让 checkout 出来的文件带 CRLF，
+# 而 CRLF 的 `#!/usr/bin/env bash` 在 Arch Linux 上会导致 shebang 失效
+# （报 bad interpreter: /usr/bin/env: 'bash\r'）。这些脚本最终要在
+# Arch Live 环境里执行，因此仓库与工作区都必须保持 LF。
+
+* text=auto eol=lf
+*.sh text eol=lf
