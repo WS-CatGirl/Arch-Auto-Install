@@ -37,12 +37,25 @@ AIT_LOG_FILE="${AIT_LOG_FILE:-}"
 
 # ---------------------------------------------------------------------------
 # log primitives
+#
+# CONTRACT - every log line goes to stderr, never to stdout.
+#   * Callers capture helper results with x=$(helper), so anything a helper
+#     writes to stdout ends up inside $x.  A log line leaking into stdout
+#     silently corrupts that value: every case branch misses and the code
+#     slides into the wrong (sometimes destructive) path.  That is exactly how
+#     the t14 / t16 / t21 incidents happened.
+#   * Therefore a function that returns a value on stdout must never log.
+#     Pass values back through a global variable instead - _DISK_ANSWER,
+#     _FMT_ACTION, _MIRROR_CHOICE are the established examples - or print the
+#     value and nothing else.
+#   * _ait_emit keeps appending to AIT_LOG_FILE when it is set; that copy is
+#     file-only and unaffected by the stream choice above.
 # ---------------------------------------------------------------------------
 _ait_emit() {
     local label="$1"
     local color="$2"
     shift 2
-    printf '%b[%s]%b %s\n' "$color" "$label" "$AIT_C_RESET" "$*"
+    printf '%b[%s]%b %s\n' "$color" "$label" "$AIT_C_RESET" "$*" >&2
     if [[ -n $AIT_LOG_FILE ]]; then
         printf '[%s] %s\n' "$label" "$*" >>"$AIT_LOG_FILE" 2>/dev/null || true
     fi
@@ -61,14 +74,57 @@ die() {
 
 # ---------------------------------------------------------------------------
 # interactive helpers - always talk to /dev/tty, never to redirected stdout
+#
+# When there is no controlling terminal (setsid, CI, cron) /dev/tty cannot be
+# opened, so prompts fall back to stderr and answers are read from stdin.
+# The fallback notice MUST stay on stderr: callers capture the answer with
+# $(read_answer ...), so anything written to stdout would end up inside the
+# captured value and silently corrupt menu decisions.
 # ---------------------------------------------------------------------------
+AIT_NO_TTY_WARNED=0
+
+# _ait_tty_usable - succeeds when /dev/tty can be opened for reading
+_ait_tty_usable() {
+    { : </dev/tty; } 2>/dev/null
+}
+
+# _ait_tty_notice - explain the fallback once per run, always on stderr
+_ait_tty_notice() {
+    local msg='No controlling terminal (/dev/tty is not usable); prompts go to stderr and answers are read from stdin.'
+    local marker=''
+
+    if [[ $AIT_NO_TTY_WARNED -ne 0 ]]; then
+        return 0
+    fi
+    AIT_NO_TTY_WARNED=1
+    # read_answer runs inside $(...), i.e. a subshell, so the variable above is
+    # not shared with the parent shell. $$ survives subshells, so the first
+    # notice is also recorded in a per-process marker file to stay quiet later.
+    marker="${TMPDIR:-/tmp}/.ait-no-tty-$$"
+    if [[ -e $marker ]]; then
+        return 0
+    fi
+    : >"$marker" 2>/dev/null || true
+    printf '%b[%s]%b %s\n' "$AIT_C_YELLOW" 'WARN  ' "$AIT_C_RESET" "$msg" >&2
+    if [[ -n $AIT_LOG_FILE ]]; then
+        printf '[%s] %s\n' 'WARN  ' "$msg" >>"$AIT_LOG_FILE" 2>/dev/null || true
+    fi
+}
+
 pause() {
     # NOTE: the default must not be wrapped in extra quotes - inside ${1:-...}
     # a single quote is a literal character, not a quoting operator, so the
     # old form printed the quotes into the prompt.
     local prompt="${1:-Press Enter to continue...}"
-    printf '%s' "$prompt" >/dev/tty
-    IFS= read -r _ </dev/tty || true
+
+    if _ait_tty_usable; then
+        printf '%s' "$prompt" >/dev/tty
+        IFS= read -r _ </dev/tty || true
+        return 0
+    fi
+    _ait_tty_notice
+    printf '%s' "$prompt" >&2
+    IFS= read -r _ || true
 }
 
 # read_answer <prompt> [default]
@@ -78,8 +134,14 @@ read_answer() {
     local default="${2:-}"
     local answer=''
 
-    printf '%s' "$prompt" >/dev/tty
-    IFS= read -r answer </dev/tty || answer=''
+    if _ait_tty_usable; then
+        printf '%s' "$prompt" >/dev/tty
+        IFS= read -r answer </dev/tty || answer=''
+    else
+        _ait_tty_notice
+        printf '%s' "$prompt" >&2
+        IFS= read -r answer || answer=''
+    fi
     if [[ -z $answer ]]; then
         answer="$default"
     fi

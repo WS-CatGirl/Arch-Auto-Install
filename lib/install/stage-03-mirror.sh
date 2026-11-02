@@ -42,8 +42,13 @@ _mirror_trim() {
 _mirror_ask_country() {
     local raw=''
     local value=''
+    local tries=0
 
     while :; do
+        tries=$((tries + 1))
+        if [[ $tries -gt 5 ]]; then
+            die 'No valid country was entered after 5 attempts.'
+        fi
         raw=$(read_answer 'Countries for reflector (name or ISO code, comma separated) [cn]: ' 'cn')
         value=$(_mirror_trim "$raw")
         if [[ -z $value ]]; then
@@ -58,26 +63,58 @@ _mirror_ask_country() {
     done
 }
 
+# _mirror_print_tty <text>
+# Prints one block of text on the controlling terminal.  Menus deliberately
+# bypass stdout so they stay visible when the installer tees its output into a
+# log file.  When /dev/tty cannot be opened (setsid, CI, cron) the text falls
+# back to stderr and common.sh's _ait_tty_notice explains that once - the
+# fallback is never silent, and it never repeats the explanation.
+_mirror_print_tty() {
+    local text="$1"
+
+    if _ait_tty_usable; then
+        if { printf '%s\n' "$text" >/dev/tty; } 2>/dev/null; then
+            return 0
+        fi
+    fi
+    _ait_tty_notice
+    printf '%s\n' "$text" >&2
+}
+
+# The selected mirror menu option (1-4).  Set by _mirror_ask_choice and read by
+# stage_03_mirror.  It is deliberately passed through a global instead of stdout:
+# log_warn also writes to stdout, so any $(...) caller would capture the warning
+# text together with the answer, fail every case arm and silently skip the
+# user's real choice - exactly the blocker reported in t21.
+_MIRROR_CHOICE=''
+
 # _mirror_ask_choice
-# Prints the four-option menu and returns the validated choice on stdout.
+# Prints the four-option menu and stores the validated choice in _MIRROR_CHOICE.
 _mirror_ask_choice() {
     local choice=''
+    local menu=''
+    local tries=0
 
     while :; do
-        {
+        tries=$((tries + 1))
+        if [[ $tries -gt 5 ]]; then
+            die 'Too many invalid answers at the mirror menu; nothing was changed.'
+        fi
+        menu=$(
             printf '\n'
             printf 'How do you want to configure %s?\n' "$AIT_MIRRORLIST"
             printf '  1) reflector - search the fastest mirrors automatically [RECOMMENDED]\n'
             printf '  2) use the mirror list shipped with this repository\n'
             printf '  3) manual configuration (not recommended for beginners)\n'
             printf '  4) skip, keep the current mirrorlist\n'
-        } >/dev/tty
+        )
+        _mirror_print_tty "$menu"
 
         choice=$(read_answer 'Your choice [1-4]: ' '1')
         choice="${choice//[[:space:]]/}"
         case $choice in
             1 | 2 | 3 | 4)
-                printf '%s' "$choice"
+                _MIRROR_CHOICE="$choice"
                 return 0
                 ;;
             *)
@@ -157,7 +194,7 @@ _mirror_manual() {
     log_info 'Keep one "Server =" line per mirror, then save and exit your editor.'
     log_info 'Example line (USTC, China):'
     # shellcheck disable=SC2016  # $repo and $arch must stay literal placeholders
-    printf '%s\n' '  Server = https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch' >/dev/tty
+    _mirror_print_tty '  Server = https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch'
     log_warn 'Manual setup is NOT recommended for users without Arch Linux experience.'
     log_info 'Nothing was changed. Re-run this installer once the mirrorlist is ready.'
     die 'Exiting for manual mirror configuration.'
@@ -171,13 +208,15 @@ stage_03_mirror() {
     printf '\n'
     log_info 'Stage 3: package mirror selection and keyring refresh'
 
-    choice=$(_mirror_ask_choice)
+    _mirror_ask_choice
+    choice="${_MIRROR_CHOICE:-}"
 
     case $choice in
         1) _mirror_reflector ;;
         2) _mirror_repo_list ;;
         3) _mirror_manual ;;
         4) log_warn 'Mirror configuration skipped; the current mirrorlist is kept.' ;;
+        *) die "Internal error: the mirror prompt returned '${choice}'. Nothing was changed." ;;
     esac
 
     log_info 'Refreshing package databases and installing archlinux-keyring.'
