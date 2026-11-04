@@ -17,6 +17,8 @@ AIT_STAGE_FUNCS=(
     stage_05_format
     stage_06_mount
     stage_07_mount
+    stage_08_pacstrap
+    stage_09_chroot
 )
 
 _ait_source_stage_modules() {
@@ -39,7 +41,7 @@ main_install() {
         "$fn"
     done
 
-    # Stages 08-16 are not written yet (Plan-Main.md stages 8-10 and the
-    # chroot half 11-16).  Stop loudly instead of pretending to succeed.
-    die "Stages 08-16 are not implemented yet. Aborting after stage 07."
+    # Stages 10-16 are not written yet (the stage 2 config half, see
+    # Plan-Main.md stages 10-16).  Stop loudly instead of pretending to succeed.
+    die "Stages 10-16 are not implemented yet. Aborting after stage 09."
 }
